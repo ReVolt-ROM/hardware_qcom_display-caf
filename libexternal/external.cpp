@@ -237,8 +237,11 @@ void ExternalDisplay::setEDIDMode(int resMode) {
 }
 
 void ExternalDisplay::setHPD(uint32_t startEnd) {
-    ALOGD_IF(DEBUG,"HPD enabled=%d", startEnd);
-    writeHPDOption(startEnd);
+    // If HDMI is not connected dont write option
+    if(mConnectedFbNum == mHdmiFbNum) {
+        ALOGD_IF(DEBUG,"HPD enabled=%d", startEnd);
+        writeHPDOption(startEnd);
+    }
 }
 
 void ExternalDisplay::setActionSafeDimension(int w, int h) {
