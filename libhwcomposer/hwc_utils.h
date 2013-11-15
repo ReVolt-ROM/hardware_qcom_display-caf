@@ -54,6 +54,7 @@ namespace qhwc {
 //fwrd decl
 class QueuedBufferStore;
 class ExternalDisplay;
+class VirtualDisplay;
 class IFBUpdate;
 class IVideoOverlay;
 class MDPComp;
@@ -81,6 +82,11 @@ struct DisplayAttributes {
     // In pause state, composition is bypassed
     // used for WFD displays only
     bool isPause;
+    // To trigger padding round to clean up mdp
+    // pipes
+    bool isConfiguring;
+    // External Display is in MDP Downscale mode indicator
+    bool mDownScaleMode;
 };
 
 struct ListStats {
@@ -94,6 +100,10 @@ struct ListStats {
     bool needsAlphaScale;
     bool preMultipliedAlpha;
     bool planeAlpha;
+    // Notifies hwcomposer about the start and end of animation
+    // This will be set to true during animation, otherwise false.
+    bool isDisplayAnimating;
+    bool secureUI; // Secure display layer
 };
 
 struct LayerProp {
@@ -174,13 +184,41 @@ int getBlending(int blending);
 //Helper function to dump logs
 void dumpsys_log(android::String8& buf, const char* fmt, ...);
 
+int getExtOrientation(hwc_context_t* ctx);
+
+bool isValidRect(hwc_rect_t& rect);
+void deductRect(const hwc_layer_1_t* layer, hwc_rect_t& irect);
+void getIntersection(hwc_rect_t& rect1,
+                        hwc_rect_t& rect2, hwc_rect_t& irect);
+void getUnion(hwc_rect_t& rect1,
+                        hwc_rect_t& rect2, hwc_rect_t& irect);
+void optimizeLayerRects(hwc_context_t *ctx,
+                        const hwc_display_contents_1_t *list, const int& dpy);
+
 /* Calculates the destination position based on the action safe rectangle */
-void getActionSafePosition(hwc_context_t *ctx, int dpy, uint32_t& x,
-                                        uint32_t& y, uint32_t& w, uint32_t& h);
+void getActionSafePosition(hwc_context_t *ctx, int dpy, hwc_rect_t& dst);
 
+void getAspectRatioPosition(int destWidth, int destHeight, int srcWidth,
+                                int srcHeight, hwc_rect_t& rect);
 
-void getAspectRatioPosition(hwc_context_t *ctx, int dpy, int orientation,
-                        uint32_t& x, uint32_t& y, uint32_t& w, uint32_t& h);
+void getAspectRatioPosition(hwc_context_t* ctx, int dpy, int extOrientation,
+                                hwc_rect_t& inRect, hwc_rect_t& outRect);
+
+bool isPrimaryPortrait(hwc_context_t *ctx);
+
+bool isOrientationPortrait(hwc_context_t *ctx);
+
+void calcExtDisplayPosition(hwc_context_t *ctx,
+                               private_handle_t *hnd,
+                               int dpy,
+                               hwc_rect_t& sourceCrop,
+                               hwc_rect_t& displayFrame,
+                               int& transform,
+                               ovutils::eTransform& orient);
+
+// Returns the orientation that needs to be set on external for
+// BufferMirrirMode(Sidesync)
+int getMirrorModeOrientation(hwc_context_t *ctx);
 
 //Close acquireFenceFds of all layers of incoming list
 void closeAcquireFds(hwc_display_contents_1_t* list);
@@ -196,7 +234,7 @@ void trimLayer(hwc_context_t *ctx, const int& dpy, const int& transform,
 //Sets appropriate mdp flags for a layer.
 void setMdpFlags(hwc_layer_1_t *layer,
         ovutils::eMdpFlags &mdpFlags,
-        int rotDownscale = 0);
+        int rotDownscale, int transform);
 
 int configRotator(overlay::Rotator *rot, ovutils::Whf& whf,
         const ovutils::eMdpFlags& mdpFlags,
@@ -210,18 +248,16 @@ int configMdp(overlay::Overlay *ov, const ovutils::PipeArgs& parg,
 void updateSource(ovutils::eTransform& orient, ovutils::Whf& whf,
         hwc_rect_t& crop);
 
-
-
 //Routine to configure low resolution panels (<= 2048 width)
 int configureLowRes(hwc_context_t *ctx, hwc_layer_1_t *layer, const int& dpy,
-        ovutils::eMdpFlags& mdpFlags, const ovutils::eZorder& z,
-        const ovutils::eIsFg& isFg, const ovutils::eDest& dest,
+        ovutils::eMdpFlags& mdpFlags, ovutils::eZorder& z,
+        ovutils::eIsFg& isFg, const ovutils::eDest& dest,
         overlay::Rotator **rot);
 
 //Routine to configure high resolution panels (> 2048 width)
 int configureHighRes(hwc_context_t *ctx, hwc_layer_1_t *layer, const int& dpy,
-        ovutils::eMdpFlags& mdpFlags, const ovutils::eZorder& z,
-        const ovutils::eIsFg& isFg, const ovutils::eDest& lDest,
+        ovutils::eMdpFlags& mdpFlags, ovutils::eZorder& z,
+        ovutils::eIsFg& isFg, const ovutils::eDest& lDest,
         const ovutils::eDest& rDest, overlay::Rotator **rot);
 
 // Inline utility functions
@@ -278,6 +314,11 @@ static inline int getHeight(const private_handle_t* hnd) {
     return hnd->height;
 }
 
+//Return true if the buffer is intended for Secure Display
+static inline bool isSecureDisplayBuffer(const private_handle_t* hnd) {
+    return (hnd && (hnd->flags & private_handle_t::PRIV_FLAGS_SECURE_DISPLAY));
+}
+
 template<typename T> inline T max(T a, T b) { return (a > b) ? a : b; }
 template<typename T> inline T min(T a, T b) { return (a < b) ? a : b; }
 
@@ -287,7 +328,8 @@ void init_uevent_thread(hwc_context_t* ctx);
 void init_vsync_thread(hwc_context_t* ctx);
 
 inline void getLayerResolution(const hwc_layer_1_t* layer,
-                               int& width, int& height) {
+                               int& width, int& height)
+{
     hwc_rect_t displayFrame  = layer->displayFrame;
     width = displayFrame.right - displayFrame.left;
     height = displayFrame.bottom - displayFrame.top;
@@ -330,34 +372,43 @@ struct hwc_context_t {
     qhwc::IFBUpdate *mFBUpdate[HWC_NUM_DISPLAY_TYPES];
     // External display related information
     qhwc::ExternalDisplay *mExtDisplay;
+    qhwc::VirtualDisplay *mVirtualDisplay;
     qhwc::MDPInfo mMDP;
     qhwc::VsyncState vstate;
-
     qhwc::DisplayAttributes dpyAttr[HWC_NUM_DISPLAY_TYPES];
     qhwc::ListStats listStats[HWC_NUM_DISPLAY_TYPES];
     qhwc::LayerProp *layerProp[HWC_NUM_DISPLAY_TYPES];
-    qhwc::LayerRotMap *mLayerRotMap[HWC_NUM_DISPLAY_TYPES];
     qhwc::MDPComp *mMDPComp[HWC_NUM_DISPLAY_TYPES];
     qhwc::CablProp mCablProp;
 
+    // No animation on External display feature
+    // Notifies hwcomposer about the device orientation before animation.
+    int deviceOrientation;
+    // Stores the crop, dest rect and transform value of video before animation.
+    hwc_rect_t mPrevCropVideo;
+    hwc_rect_t mPrevDestVideo;
+    int mPrevTransformVideo;
     //Securing in progress indicator
     bool mSecuring;
-    //External Display configuring progress indicator
-    bool mExtDispConfiguring;
+    //WFD on proprietary stack
+    bool mVirtualonExtActive;
     //Display in secure mode indicator
     bool mSecureMode;
-    //Lock to prevent set from being called while blanking
-    mutable Locker mBlankLock;
-    //Lock to protect prepare & set when detaching external disp
-    mutable Locker mExtLock;
     //DMA used for rotator
     bool mDMAInUse;
     //MDP rotater needed
     bool mNeedsRotator;
     //Check if base pipe is set up
     bool mBasePipeSetup;
+    //Lock to protect drawing data structures
+    mutable Locker mDrawLock;
     // External Orientation
     int mExtOrientation;
+    //Used for SideSync feature
+    //which overrides the mExtOrientation
+    bool mBufferMirrorMode;
+
+    qhwc::LayerRotMap *mLayerRotMap[HWC_NUM_DISPLAY_TYPES];
 };
 
 namespace qhwc {
@@ -368,6 +419,11 @@ static inline bool isSkipPresent (hwc_context_t *ctx, int dpy) {
 static inline bool isYuvPresent (hwc_context_t *ctx, int dpy) {
     return  ctx->listStats[dpy].yuvCount;
 }
+
+static inline bool has90Transform(hwc_layer_1_t *layer) {
+    return (layer->transform & HWC_TRANSFORM_ROT_90);
+}
+
 };
 
 #endif //HWC_UTILS_H

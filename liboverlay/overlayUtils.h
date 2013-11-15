@@ -77,8 +77,11 @@
 #define MDP_OV_PIPE_FORCE_DMA 0x4000
 #endif
 
+#ifndef MDP_SECURE_DISPLAY_OVERLAY_SESSION
+#define MDP_SECURE_DISPLAY_OVERLAY_SESSION 0x00002000
+#endif
+
 #define FB_DEVICE_TEMPLATE "/dev/graphics/fb%u"
-#define NUM_FB_DEVICES 3
 
 namespace overlay {
 
@@ -257,6 +260,7 @@ enum eMdpFlags {
     OV_MDP_PIPE_FORCE_DMA = MDP_OV_PIPE_FORCE_DMA,
     OV_MDP_DEINTERLACE = MDP_DEINTERLACE,
     OV_MDP_SECURE_OVERLAY_SESSION = MDP_SECURE_OVERLAY_SESSION,
+    OV_MDP_SECURE_DISPLAY_OVERLAY_SESSION = MDP_SECURE_DISPLAY_OVERLAY_SESSION,
     OV_MDP_SOURCE_ROTATED_90 = MDP_SOURCE_ROTATED_90,
     OV_MDP_BACKEND_COMPOSITION = MDP_BACKEND_COMPOSITION,
     OV_MDP_BLEND_FG_PREMULT = MDP_BLEND_FG_PREMULT,
@@ -385,14 +389,7 @@ inline void clearMdpFlags(eMdpFlags& f, eMdpFlags v) {
     f = static_cast<eMdpFlags>(clrBit(f, v));
 }
 
-// fb 0/1/2
 enum { FB0, FB1, FB2 };
-
-//Panels could be categorized as primary and external
-enum { PRIMARY, EXTERNAL };
-
-// 2 for rgb0/1 double bufs
-enum { RGB_PIPE_NUM_BUFS = 2 };
 
 struct ScreenInfo {
     ScreenInfo() : mFBWidth(0),
